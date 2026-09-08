@@ -1,0 +1,30 @@
+/* Global styles — Tailwind layers, tabular numbers, black background base. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  background-color: #000000;
+}
+
+body {
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #0f1115 25%, #1a1d24 37%, #0f1115 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
