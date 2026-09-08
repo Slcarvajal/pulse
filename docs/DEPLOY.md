@@ -20,7 +20,7 @@ sudo npm install -g pm2
 
 ## 3. App
 ```bash
-cd ~ && git clone <repo-url> pulse && cd pulse
+cd ~ && git clone https://github.com/Slcarvajal/pulse.git pulse && cd pulse
 cp .env.example .env && nano .env
 ```
 Fill `.env`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (from Google Cloud console),
