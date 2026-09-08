@@ -16,6 +16,7 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --d
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt update && sudo apt install -y caddy
 sudo npm install -g pm2
+sudo fallocate -l 1G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile   # 512MB box: needed for npm ci/vite
 ```
 
 ## 3. App
@@ -24,7 +25,7 @@ cd ~ && git clone https://github.com/Slcarvajal/pulse.git pulse && cd pulse
 cp .env.example .env && nano .env
 ```
 Fill `.env`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (from Google Cloud console),
-`BASE_URL=https://carvafit.carvajalgoenaga.com`, `PORT=3000`, `AGE=<your age>`.
+`BASE_URL=https://carvafit.carvajalgoenaga.com`, `PORT=3000`, `AGE=<your age>`, `TZ=America/Bogota`.
 ```bash
 npm ci && npm run icons && npm run build
 pm2 start ecosystem.config.cjs && pm2 save
