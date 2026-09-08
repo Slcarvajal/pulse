@@ -333,8 +333,18 @@ export async function listRange(dataType, startDate, endDate) {
 export const fetchRange = listRange;
 
 /**
+ * Data types capped at a 14-day roll-up range by the Health API (90 days for all others).
+ */
+const SHORT_RANGE_TYPES = new Set([
+  'heart-rate',
+  'total-calories',
+  'active-minutes',
+  'calories-in-heart-rate-zone'
+]);
+
+/**
  * POST :dailyRollUp for one type over a civil-date range, chunked to the API limit
- * (14 days for 'heart-rate', 90 otherwise). Range sent closed-open.
+ * (14 days for SHORT_RANGE_TYPES, 90 otherwise). Range sent closed-open.
  * @param {string} dataType kebab-case id, e.g. 'steps'
  * @param {string} startDate YYYY-MM-DD (inclusive)
  * @param {string} endDate YYYY-MM-DD (inclusive)
@@ -343,7 +353,7 @@ export const fetchRange = listRange;
  */
 export async function dailyRollUp(dataType, startDate, endDate) {
   const accessToken = await getAccessToken();
-  const maxDays = dataType === 'heart-rate' ? 14 : 90;
+  const maxDays = SHORT_RANGE_TYPES.has(dataType) ? 14 : 90;
   const endExclusive = shiftDate(endDate, 1);
   /** @type {any[]} */
   const points = [];
@@ -375,7 +385,9 @@ export async function dailyRollUp(dataType, startDate, endDate) {
 
 /**
  * POST :rollUp — INTRADAY buckets (HEALTH_API.md §5). Physical RFC3339 times, closed-open.
- * Buckets with no samples are omitted by the API. Max 14 days for 'heart-rate'.
+ * Buckets with no samples are omitted by the API. Chunked to the API limit
+ * (14 days for SHORT_RANGE_TYPES, 90 otherwise); chunks are concatenated in
+ * chronological order.
  * @param {string} dataType kebab-case id, e.g. 'heart-rate'
  * @param {string} startIso RFC3339 physical time, inclusive
  * @param {string} endIso RFC3339 physical time, exclusive
@@ -385,29 +397,39 @@ export async function dailyRollUp(dataType, startDate, endDate) {
  */
 export async function rollUp(dataType, startIso, endIso, windowSize = '300s') {
   const accessToken = await getAccessToken();
+  const maxDays = SHORT_RANGE_TYPES.has(dataType) ? 14 : 90;
+  const maxMs = maxDays * 24 * 60 * 60 * 1000;
+  const endTime = new Date(endIso).getTime();
   /** @type {any[]} */
   const points = [];
-  let pageToken;
-  do {
-    /** @type {Record<string, any>} */
-    const body = { range: { startTime: startIso, endTime: endIso }, windowSize, pageSize: 500 };
-    if (pageToken) body.pageToken = pageToken;
-    const json = await apiFetch(
-      `${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:rollUp`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json'
+  let chunkStartTime = new Date(startIso).getTime();
+  while (chunkStartTime < endTime) {
+    const chunkEndTime = Math.min(chunkStartTime + maxMs, endTime);
+    const chunkStartIso = new Date(chunkStartTime).toISOString();
+    const chunkEndIso = new Date(chunkEndTime).toISOString();
+    let pageToken;
+    do {
+      /** @type {Record<string, any>} */
+      const body = { range: { startTime: chunkStartIso, endTime: chunkEndIso }, windowSize, pageSize: 500 };
+      if (pageToken) body.pageToken = pageToken;
+      const json = await apiFetch(
+        `${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:rollUp`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(body)
         },
-        body: JSON.stringify(body)
-      },
-      dataType
-    );
-    if (Array.isArray(json.rollupDataPoints)) points.push(...json.rollupDataPoints);
-    pageToken = json.nextPageToken;
-  } while (pageToken);
+        dataType
+      );
+      if (Array.isArray(json.rollupDataPoints)) points.push(...json.rollupDataPoints);
+      pageToken = json.nextPageToken;
+    } while (pageToken);
+    chunkStartTime = chunkEndTime;
+  }
   return points;
 }
 

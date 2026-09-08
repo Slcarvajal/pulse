@@ -14,7 +14,7 @@ Filter patterns (field name = dataType with `-` → `_`):
 - sleep (sessions, by END): `sleep.interval.civil_end_time >= "2026-09-06" AND sleep.interval.civil_end_time < "2026-09-09"`
 
 ## 2. DAILY ROLL-UP  `POST .../dataPoints:dailyRollUp`  (use this for steps + HR zones; avoids paging per-minute points)
-Body: `{ "range": { "start": { "date": {year,month,day} }, "end": { "date": {year,month,day} } }, "windowSizeDays": 1 }`  (closed-open; max 90 days, but 14 days for `heart-rate`)
+Body: `{ "range": { "start": { "date": {year,month,day} }, "end": { "date": {year,month,day} } }, "windowSizeDays": 1 }`  (closed-open; max 90 days, but **14 days** for `heart-rate`, `total-calories`, `active-minutes`, `calories-in-heart-rate-zone` — chunk those)
 Response: `{ rollupDataPoints: [ { civilStartTime:{date:{year,month,day}}, civilEndTime, <valueKey>: {...} } ] }`
 
 ## 3. Data types → real payload shapes (a DataPoint always has `dataSource` + ONE value key)
