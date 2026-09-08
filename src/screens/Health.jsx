@@ -3,9 +3,9 @@ import Card from '../components/Card.jsx';
 import RangeBar from '../components/RangeBar.jsx';
 import { COLORS } from '../theme.js';
 
-const fmt = (v, d) => (v === null || v === undefined || Number.isNaN(v) ? '—' : v.toFixed(d));
+const fmt = (v, d) => (v === null || v === undefined || Number.isNaN(v) ? '--' : v.toFixed(d));
 const fmtSigned = (v, d) => {
-  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  if (v === null || v === undefined || Number.isNaN(v)) return '--';
   const s = v.toFixed(d);
   return v > 0 ? `+${s}` : s;
 };
@@ -49,6 +49,7 @@ export default function Health({ data }) {
       {METRICS.map((m) => {
         const value = today[m.key];
         const range = ranges[m.key];
+        const isMissing = value === null || value === undefined || Number.isNaN(value);
         const valueStr = m.signed ? fmtSigned(value, m.decimals) : fmt(value, m.decimals);
         const rMin = range?.min;
         const rMax = range?.max;
@@ -56,13 +57,18 @@ export default function Health({ data }) {
         return (
           <Card key={m.key} label={m.label}>
             <div className="flex items-baseline gap-2 mb-3">
-              <span className="num-2">{valueStr}</span>
+              <span className="num-2" style={isMissing ? { color: COLORS.muted } : undefined}>{valueStr}</span>
               <span className="lbl">{m.unit}</span>
             </div>
-            <RangeBar value={value ?? null} range={range} accent={m.accent} />
+            <RangeBar value={isMissing ? null : value} range={range} accent={m.accent} />
             <div className="mt-2">
               <span className="lbl">{rangeStr}</span>
             </div>
+            {isMissing && (
+              <div className="mt-1">
+                <span className="lbl">NO READING YET</span>
+              </div>
+            )}
           </Card>
         );
       })}

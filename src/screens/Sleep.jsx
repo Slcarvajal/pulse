@@ -27,6 +27,12 @@ function signedBed(m) {
   return m >= 720 ? m - 1440 : m;
 }
 
+function fmtHours(n) {
+  let v = Math.round((n ?? 0) * 10) / 10;
+  if (v === 0) v = 0; // normalise -0 to 0
+  return `${v}H`;
+}
+
 function stddev(arr) {
   const clean = (arr || []).filter((v) => typeof v === 'number' && !Number.isNaN(v));
   if (clean.length < 2) return 0;
@@ -49,6 +55,7 @@ function Tile({ value, label, dot }) {
 
 export default function Sleep({ data }) {
   const sleep = data?.sleep || {};
+  const today = data?.today || {};
   const stages = sleep.stages || {};
   const nights = Array.isArray(sleep.nights) ? sleep.nights : [];
   const needBreakdown = sleep.needBreakdown || {};
@@ -73,7 +80,7 @@ export default function Sleep({ data }) {
   const nap = needBreakdown.nap ?? 0;
   const posTotal = Math.max(0.001, baseline + debt + strain);
   const napAbs = Math.abs(nap);
-  const barDomain = Math.max(posTotal + napAbs, 0.001);
+  const barDomain = Math.max(posTotal, 0.001);
 
   const last7 = nights.slice(-7);
   const hoursVals = last7.map((n) => (n.asleepMin ?? 0) / 60);
@@ -167,7 +174,7 @@ export default function Sleep({ data }) {
           label="SLEEP NEED"
           right={
             <div className="text-right">
-              <span className="num-2">{Math.round((sleep.debtHours ?? 0) * 10) / 10}H</span>
+              <span className="num-2">{fmtHours(today.sleepNeed ?? needHours)}</span>
             </div>
           }
         >
@@ -196,7 +203,7 @@ export default function Sleep({ data }) {
             />
             {napAbs > 0 && (
               <rect
-                x={(posTotal / barDomain) * 100}
+                x={((posTotal - napAbs) / barDomain) * 100}
                 y="0"
                 width={(napAbs / barDomain) * 100}
                 height="16"
@@ -207,19 +214,19 @@ export default function Sleep({ data }) {
           <div className="w-full flex flex-wrap items-center gap-x-4 gap-y-2 mt-3">
             <span className="lbl flex items-center gap-1.5">
               <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.sleep, display: 'inline-block' }} />
-              BASELINE {baseline}H
+              BASELINE {fmtHours(baseline)}
             </span>
             <span className="lbl flex items-center gap-1.5">
               <span style={{ width: 6, height: 6, borderRadius: 3, background: SLEEP_DEBT, display: 'inline-block' }} />
-              DEBT {debt}H
+              DEBT {fmtHours(debt)}
             </span>
             <span className="lbl flex items-center gap-1.5">
               <span style={{ width: 6, height: 6, borderRadius: 3, background: SLEEP_STRAIN, display: 'inline-block' }} />
-              STRAIN {strain}H
+              STRAIN {fmtHours(strain)}
             </span>
             <span className="lbl flex items-center gap-1.5">
               <span style={{ width: 6, height: 6, borderRadius: 3, background: COLORS.dim, display: 'inline-block' }} />
-              NAP -{napAbs}H
+              NAP {fmtHours(nap)}
             </span>
           </div>
         </Card>

@@ -322,5 +322,6 @@ export async function collectLatestHr() {
   const latest = points[0];
   const bpm = latest && num(latest.heartRate && latest.heartRate.beatsPerMinute);
   if (bpm === undefined) return null;
-  return { bpm, at: latest.sampleTime && latest.sampleTime.physicalTime };
+  const st = (latest.heartRate && latest.heartRate.sampleTime) || latest.sampleTime;
+  return { bpm, at: st && st.physicalTime ? st.physicalTime : null };
 }
