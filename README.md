@@ -38,6 +38,12 @@ npm run build
 - Start once with `pm2 start ecosystem.config.cjs`, then `pm2 save`.
 - Subsequent deploys: `npm run deploy`, which runs `git pull && npm ci && npm run build && pm2 restart pulse`.
 
+## Mock data / screenshot QA
+Append `?mock=1` to any URL (e.g. `https://carvafit.carvajalgoenaga.com/?mock=1`) to short-circuit the API client to the deterministic 30-day fixture in `src/mock.json`, with no network requests made. Used for screenshot QA of the dashboard without live Fitbit data.
+
+## Live heart-rate polling
+`GET /api/live[?refresh=1]` returns `{ generatedAt, latestHr, hrDay }` only, backed by a 2-minute cache (`data/live.json`). The dashboard polls this endpoint every 60s while the document is visible, to show a near-real-time heart rate without re-fetching the full 30-day payload. The service worker treats `/api/live` as network-only — it is never cached.
+
 ## Daily refresh cron
 Not automated — add manually on the server (`crontab -e`):
 ```

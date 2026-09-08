@@ -2,10 +2,11 @@
 import sharp from 'sharp';
 import { mkdir } from 'node:fs/promises';
 
+// 270° gauge ring: starts top-left (-135deg), sweeps clockwise 270deg, gap at bottom.
 const svg = (size) => `
 <svg width="${size}" height="${size}" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
   <rect width="100" height="100" fill="#000000"/>
-  <circle cx="50" cy="50" r="34" fill="none" stroke="#ffffff" stroke-width="12"/>
+  <path d="M 25.96 25.96 A 34 34 0 1 1 25.96 74.04" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round"/>
 </svg>
 `;
 

@@ -1,4 +1,4 @@
-/* Global styles — Tailwind layers, tabular numbers, black background base. */
+/* Global styles — Tailwind layers, numeral/label type helpers (SPEC §7.2), pulse keyframe (§7.11). */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -12,19 +12,45 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.label {
-  font-size: 11px;
+/* Numerals — Inter 700, tabular-nums, tight tracking. */
+.num-hero,
+.num-card,
+.num-2,
+.num-3 {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  color: #F5F7FA;
+}
+
+.num-hero { font-size: 88px; line-height: 0.92; }
+.num-card { font-size: 56px; line-height: 1; }
+.num-2 { font-size: 32px; line-height: 1; }
+.num-3 { font-size: 20px; line-height: 1; }
+
+/* Labels — Barlow Condensed 600, uppercase, wide tracking, muted. */
+.lbl,
+.lbl-lg {
+  font-family: 'Barlow Condensed', system-ui, sans-serif;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
+  color: #6B7280;
 }
 
-.skeleton {
-  background: linear-gradient(90deg, #0f1115 25%, #1a1d24 37%, #0f1115 63%);
-  background-size: 400% 100%;
-  animation: shimmer 1.4s ease infinite;
+.lbl { font-size: 11px; }
+.lbl-lg { font-size: 12px; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
 }
 
-@keyframes shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    transition-duration: 0s !important;
+  }
 }

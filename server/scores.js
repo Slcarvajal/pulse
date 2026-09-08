@@ -229,3 +229,209 @@ export function sleepScore(s) {
   const restorative = asleep > 0 ? clamp((deep + rem) / asleep / RESTORATIVE_TARGET, 0, 1) : 0;
   return clamp(100 * (0.5 * duration + 0.25 * efficiency + 0.25 * restorative), 0, 100);
 }
+
+/* ========================= v2 engine (SPEC §6) ========================= */
+
+/** @param {number} n @returns {number} */
+export function round1(n) {
+  return Number.isFinite(n) ? Math.round(n * 10) / 10 : 0;
+}
+
+/** SPEC §6.1 — weight and z-direction of each recovery input. */
+const RECOVERY_INPUTS = [
+  { key: 'hrv', weight: 0.4, mode: 'higher' },
+  { key: 'rhr', weight: 0.25, mode: 'lower' },
+  { key: 'respiratoryRate', weight: 0.15, mode: 'deviation' },
+  { key: 'spo2', weight: 0.1, mode: 'deviation' },
+  { key: 'skinTempDeviation', weight: 0.1, mode: 'deviation' }
+];
+
+/**
+ * SPEC §6.1 — recovery from the five Whoop inputs, weights renormalised over usable inputs.
+ * @param {Record<string, number>} today
+ * @param {Record<string, Baseline>} base
+ * @returns {{score:number, band:'green'|'yellow'|'red', inputs:Record<string,{value:number,z:number,weight:number,contribution:number}>}}
+ */
+export function recoveryBreakdown(today, base) {
+  const t = today || {};
+  const b = base || {};
+  /** @type {Record<string, any>} */
+  const inputs = {};
+  let weighted = 0;
+  let used = 0;
+  for (const spec of RECOVERY_INPUTS) {
+    const value = t[spec.key];
+    const bl = b[spec.key];
+    if (!Number.isFinite(value) || !bl || !Number.isFinite(bl.sd) || bl.sd === 0) continue;
+    const z = (value - bl.mean) / bl.sd;
+    const signed =
+      spec.mode === 'higher' ? z : spec.mode === 'lower' ? -z : -Math.max(0, Math.abs(z) - 1);
+    inputs[spec.key] = { value, z, weight: spec.weight, contribution: 0, signed };
+    weighted += spec.weight * signed;
+    used += spec.weight;
+  }
+  const Z = used > 0 ? weighted / used : 0;
+  for (const key of Object.keys(inputs)) {
+    inputs[key].contribution = (inputs[key].weight * inputs[key].signed) / used;
+    delete inputs[key].signed;
+  }
+  const score = used > 0 ? clamp(50 + 20 * Z, 0, 100) : 50;
+  return { score, band: band(score), inputs };
+}
+
+/**
+ * SPEC §6.1
+ * @param {Record<string, number>} today
+ * @param {Record<string, Baseline>} base
+ * @returns {number} 0-100
+ */
+export function recoveryV2(today, base) {
+  return recoveryBreakdown(today, base).score;
+}
+
+/**
+ * SPEC §6.2 — weighted load of one workout's zone minutes.
+ * @param {{light?:number,moderate?:number,vigorous?:number,peak?:number}} zoneMin
+ * @returns {number}
+ */
+export function workoutLoad(zoneMin) {
+  const z = zoneMin || {};
+  return zoneMinutesLoad({
+    LIGHT: Number(z.light) || 0,
+    MODERATE: Number(z.moderate) || 0,
+    VIGOROUS: Number(z.vigorous) || 0,
+    PEAK: Number(z.peak) || 0
+  });
+}
+
+/**
+ * SPEC §6.2 — per-workout activity strain.
+ * @param {{zoneMin?: Object}} workout
+ * @returns {number} 0-21
+ */
+export function activityStrain(workout) {
+  const load = workoutLoad(workout && workout.zoneMin);
+  return clamp(21 * (1 - Math.exp(-load / 220)), 0, 21);
+}
+
+/**
+ * SPEC §6.2 — whole-day strain: day zone minutes plus a 25% structured-exercise bonus.
+ * @param {{zoneMinutes?:Record<string,number>, workouts?:Array<{zoneMin?:Object}>, steps?:number}} input
+ * @returns {number} 0-21
+ */
+export function dayStrain(input) {
+  const i = input || {};
+  let total = zoneMinutesLoad(i.zoneMinutes);
+  for (const w of i.workouts || []) total += 0.25 * workoutLoad(w && w.zoneMin);
+  if (total <= 0) {
+    const steps = Number.isFinite(i.steps) ? i.steps : 0;
+    return clamp(21 * (1 - Math.exp(-steps / 12000)), 0, 21);
+  }
+  return clamp(21 * (1 - Math.exp(-total / 600)), 0, 21);
+}
+
+/**
+ * SPEC §6.3 — recommended strain band for today's recovery.
+ * @param {number} recoveryScore 0-100
+ * @returns {{min:number, max:number}}
+ */
+export function strainTarget(recoveryScore) {
+  const r = clamp(recoveryScore, 0, 100);
+  let centre;
+  if (r >= 67) centre = 14 + ((r - 67) / 33) * 4;
+  else if (r >= 34) centre = 9 + ((r - 34) / 33) * 5;
+  else centre = 4 + (r / 34) * 5;
+  return { min: round1(clamp(centre - 2, 0, 21)), max: round1(clamp(centre + 2, 0, 21)) };
+}
+
+/**
+ * SPEC §6.4
+ * @param {number} asleepMin
+ * @param {number} needHours
+ * @returns {number} 0-100
+ */
+export function sleepPerformance(asleepMin, needHours) {
+  const need = Number.isFinite(needHours) && needHours > 0 ? needHours : 7.5;
+  const asleep = Number.isFinite(asleepMin) ? asleepMin : 0;
+  return clamp(asleep / (need * 60), 0, 1) * 100;
+}
+
+/**
+ * SPEC §6.5
+ * @param {number} asleepMin
+ * @param {number} inBedMin
+ * @returns {number} 0-100
+ */
+export function sleepEfficiency(asleepMin, inBedMin) {
+  const asleep = Number.isFinite(asleepMin) ? asleepMin : 0;
+  if (!Number.isFinite(inBedMin) || inBedMin <= 0) return 0;
+  return clamp(asleep / inBedMin, 0, 1) * 100;
+}
+
+/**
+ * SPEC §6.6 — rolling sleep deficit over the last 7 nights, capped at 10h.
+ * @param {Array<{asleepMin?:number, need?:number}>} nights
+ * @returns {number} hours
+ */
+export function sleepDebt(nights) {
+  const recent = (nights || []).slice(-7);
+  let debt = 0;
+  for (const n of recent) {
+    if (!n || !Number.isFinite(n.asleepMin)) continue;
+    const need = Number.isFinite(n.need) && n.need > 0 ? n.need : 7.5;
+    debt += Math.max(0, need - n.asleepMin / 60);
+  }
+  return clamp(debt, 0, 10);
+}
+
+/** Bedtimes wrap midnight: 23:00 -> -60, 01:00 -> +60. @param {number} m @returns {number} */
+function signedMinutes(m) {
+  return m >= 720 ? m - 1440 : m;
+}
+
+/**
+ * SPEC §6.7 — how regular bedtime and wake time were over the last 7 nights.
+ * @param {Array<{bedtimeMin?:number, wakeMin?:number}>} nights
+ * @returns {number} 0-100
+ */
+export function sleepConsistency(nights) {
+  const recent = (nights || []).slice(-7).filter(
+    (n) => n && Number.isFinite(n.bedtimeMin) && Number.isFinite(n.wakeMin)
+  );
+  if (recent.length < 2) return 0;
+  const sdBed = stddev(recent.map((n) => signedMinutes(n.bedtimeMin)));
+  const sdWake = stddev(recent.map((n) => n.wakeMin));
+  return clamp(100 * (1 - (sdBed + sdWake) / 2 / 90), 0, 100);
+}
+
+/**
+ * SPEC §6.8 — sleep need with its four components.
+ * @param {{baselineHours?:number, yesterdayStrain?:number, debtHours?:number, napMinutes?:number}} input
+ * @returns {{need:number, breakdown:{baseline:number, debt:number, strain:number, nap:number}}}
+ */
+export function sleepNeedV2(input) {
+  const i = input || {};
+  const baseline = Number.isFinite(i.baselineHours) && i.baselineHours > 0 ? i.baselineHours : 7.5;
+  const ys = Number.isFinite(i.yesterdayStrain) ? i.yesterdayStrain : 0;
+  const strainPart = clamp((ys - 10) / 11, 0, 1) * 0.75;
+  const debtPart = clamp((Number.isFinite(i.debtHours) ? i.debtHours : 0) * 0.3, 0, 1);
+  const napPart = -Math.min((Number.isFinite(i.napMinutes) ? i.napMinutes : 0) / 60, 0.75);
+  const need = round1(clamp(baseline + strainPart + debtPart + napPart, 6, 10));
+  return {
+    need,
+    breakdown: { baseline, debt: debtPart, strain: strainPart, nap: napPart }
+  };
+}
+
+/**
+ * SPEC §6.9 — mean +/- 1 stddev over up to 30 days.
+ * @param {number[]} values
+ * @returns {{min:number|null, max:number|null, mean:number, sd:number, n:number}}
+ */
+export function personalRange(values) {
+  const xs = (values || []).filter((v) => Number.isFinite(v));
+  const m = mean(xs);
+  if (xs.length < 2) return { min: null, max: null, mean: m, sd: 0, n: xs.length };
+  const sd = stddev(xs);
+  return { min: m - sd, max: m + sd, mean: m, sd, n: xs.length };
+}

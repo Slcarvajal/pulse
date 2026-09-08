@@ -1,6 +1,11 @@
 // Hand-computed checks for server/scores.js — run: node server/scores.selftest.js
 
-import { recovery, strain, sleepScore, sleepNeed, band } from './scores.js';
+import {
+  recovery, strain, sleepScore, sleepNeed, band,
+  recoveryV2, activityStrain, dayStrain, strainTarget,
+  sleepPerformance, sleepEfficiency, sleepDebt, sleepConsistency,
+  sleepNeedV2, personalRange
+} from './scores.js';
 
 let failed = 0;
 const EPS = 1e-6;
@@ -68,6 +73,118 @@ check('strain(LIGHT only, steps 12000)', strain({ age: 30, zoneMinutes: { LIGHT:
 
 // Case 5 — strain fallback (no HR series): 21 * (1 - e^(-12000/12000)) = 21 * (1 - 1/e)
 check('strain(steps 12000, no HR)', strain({ steps: 12000, age: 30 }), 21 * (1 - Math.exp(-1)));
+
+/* ---------------------------- v2 engine (SPEC §6) ---------------------------- */
+
+// Case 6 — recoveryV2 (SPEC §6.1): zHrv=+1, zRhr=+1 (inverted), resp/spo2/temp all z=0.
+// Z = (.40*1 + .25*1 + .15*0 + .10*0 + .10*0) / 1.0 = 0.65  ->  50 + 20*.65 = 63 -> yellow
+const rec2 = recoveryV2(
+  { hrv: 70, rhr: 50, respiratoryRate: 16, spo2: 96, skinTempDeviation: 0 },
+  {
+    hrv: { mean: 60, sd: 10, n: 30 },
+    rhr: { mean: 55, sd: 5, n: 30 },
+    respiratoryRate: { mean: 16, sd: 1, n: 30 },
+    spo2: { mean: 96, sd: 1, n: 30 },
+    skinTempDeviation: { mean: 0, sd: 0.2, n: 30 }
+  }
+);
+check('recoveryV2(5 inputs)', rec2, 63);
+check('band(63)', band(rec2), 'yellow');
+
+// Case 6b — deviation inputs are free within +/-1 sd, then penalise linearly (SPEC §6.1):
+// resp z = +2 -> signed = -(2-1) = -1, weight .15
+// Z = (.40*1 + .25*1 + .15*-1) / 1.0 = 0.50  ->  50 + 10 = 60
+check(
+  'recoveryV2(resp 2sd high penalises past tolerance)',
+  recoveryV2(
+    { hrv: 70, rhr: 50, respiratoryRate: 18, spo2: 96, skinTempDeviation: 0 },
+    {
+      hrv: { mean: 60, sd: 10, n: 30 },
+      rhr: { mean: 55, sd: 5, n: 30 },
+      respiratoryRate: { mean: 16, sd: 1, n: 30 },
+      spo2: { mean: 96, sd: 1, n: 30 },
+      skinTempDeviation: { mean: 0, sd: 0.2, n: 30 }
+    }
+  ),
+  60
+);
+
+// Case 6c — missing inputs renormalise: only hrv (+1) and rhr (+1) usable,
+// Z = (.40 + .25) / .65 = 1  ->  70
+check(
+  'recoveryV2(only hrv+rhr, renormalised)',
+  recoveryV2({ hrv: 70, rhr: 50 }, { hrv: { mean: 60, sd: 10, n: 30 }, rhr: { mean: 55, sd: 5, n: 30 } }),
+  70
+);
+
+// Case 7 — activityStrain (SPEC §6.2): 5 light(w0) + 16 mod(w2) + 10 vig(w8) + 0 peak = 112
+check(
+  'activityStrain(5/16/10/0)',
+  activityStrain({ zoneMin: { light: 5, moderate: 16, vigorous: 10, peak: 0 } }),
+  21 * (1 - Math.exp(-112 / 220))
+);
+
+// Case 7b — dayStrain: day load 340 (as case 4b) + 0.25 * 112 workout bonus = 368
+check(
+  'dayStrain(zones + 1 workout)',
+  dayStrain({
+    zoneMinutes: { LIGHT: 1140, MODERATE: 60, VIGOROUS: 20, PEAK: 5 },
+    workouts: [{ zoneMin: { light: 5, moderate: 16, vigorous: 10, peak: 0 } }]
+  }),
+  21 * (1 - Math.exp(-368 / 600))
+);
+
+// Case 8 — strainTarget (SPEC §6.3): r=67 -> centre 14 -> 12..16
+check('strainTarget(67).min', strainTarget(67).min, 12);
+check('strainTarget(67).max', strainTarget(67).max, 16);
+// r=0 -> centre 4 -> clamp(2,0,21)..6
+check('strainTarget(0).min', strainTarget(0).min, 2);
+check('strainTarget(100).max', strainTarget(100).max, 20);
+
+// Case 9 — sleepPerformance / sleepEfficiency (SPEC §6.4-6.5)
+check('sleepPerformance(432 min, need 8h)', sleepPerformance(432, 8), 90);
+check('sleepEfficiency(432/468)', sleepEfficiency(432, 468), (432 / 468) * 100);
+
+// Case 10 — sleepDebt (SPEC §6.6): 7 nights x 2h deficit = 14h, capped at 10
+check(
+  'sleepDebt(7 x 2h deficit, capped)',
+  sleepDebt(Array.from({ length: 7 }, () => ({ asleepMin: 360, need: 8 }))),
+  10
+);
+check('sleepDebt(no deficit)', sleepDebt([{ asleepMin: 480, need: 8 }, { asleepMin: 500, need: 8 }]), 0);
+
+// Case 11 — sleepConsistency (SPEC §6.7): bedtimes 22:30/23:30 alternating -> signed -90/-30,
+// population sd = 30; wake 07:00/08:00 -> sd 30; avgSd 30 -> 100*(1 - 30/90) = 66.666...
+check(
+  'sleepConsistency(sd 30/30)',
+  sleepConsistency([
+    { bedtimeMin: 1350, wakeMin: 420 },
+    { bedtimeMin: 1410, wakeMin: 480 },
+    { bedtimeMin: 1350, wakeMin: 420 },
+    { bedtimeMin: 1410, wakeMin: 480 }
+  ]),
+  100 * (1 - 30 / 90)
+);
+check(
+  'sleepConsistency(identical nights)',
+  sleepConsistency([
+    { bedtimeMin: 1380, wakeMin: 420 },
+    { bedtimeMin: 1380, wakeMin: 420 }
+  ]),
+  100
+);
+
+// Case 12 — sleepNeedV2 (SPEC §6.8): 7.5 + strain .75 (strain 21) + debt 1.0 (5h) - nap .5 (30min)
+const need2 = sleepNeedV2({ yesterdayStrain: 21, debtHours: 5, napMinutes: 30 });
+check('sleepNeedV2(strain 21, debt 5h, nap 30m).need', need2.need, 8.8);
+check('sleepNeedV2 breakdown.strain', need2.breakdown.strain, 0.75);
+check('sleepNeedV2 breakdown.nap', need2.breakdown.nap, -0.5);
+
+// Case 13 — personalRange (SPEC §6.9): [1..5] -> mean 3, population sd sqrt(2)
+const pr = personalRange([1, 2, 3, 4, 5]);
+check('personalRange([1..5]).mean', pr.mean, 3);
+check('personalRange([1..5]).sd', pr.sd, Math.sqrt(2));
+check('personalRange([1..5]).min', pr.min, 3 - Math.sqrt(2));
 
 if (failed > 0) {
   console.error(`\n${failed} check(s) failed`);

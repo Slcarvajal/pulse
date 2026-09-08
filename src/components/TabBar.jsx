@@ -1,31 +1,57 @@
-// TabBar — fixed bottom nav, 3 tabs with inline SVG icons.
+// TabBar — fixed bottom nav, 5 tabs with inline thin-stroke SVG icons (SPEC §7.12).
 import { COLORS } from '../theme.js';
 
 const TABS = [
-  { key: 'today', label: 'Today' },
+  { key: 'home', label: 'Home' },
+  { key: 'recovery', label: 'Recovery' },
+  { key: 'strain', label: 'Strain' },
   { key: 'sleep', label: 'Sleep' },
-  { key: 'trends', label: 'Trends' },
+  { key: 'health', label: 'Health' },
 ];
 
 function Icon({ tab, color }) {
-  if (tab === 'today') {
+  const props = {
+    width: 20,
+    height: 20,
+    viewBox: '0 0 20 20',
+    fill: 'none',
+    stroke: color,
+    strokeWidth: 1.5,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+  };
+  if (tab === 'home') {
     return (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-        <circle cx="12" cy="12" r="9" stroke={color} strokeWidth="2" />
-        <circle cx="12" cy="12" r="3.5" fill={color} />
+      <svg {...props}>
+        <path d="M3 10.5 10 4l7 6.5" />
+        <path d="M5 9v7h10V9" />
+      </svg>
+    );
+  }
+  if (tab === 'recovery') {
+    return (
+      <svg {...props}>
+        <path d="M14.5 4.8A7 7 0 1 1 5.5 4.8" />
+      </svg>
+    );
+  }
+  if (tab === 'strain') {
+    return (
+      <svg {...props}>
+        <path d="M11 2 4 12h4.5l-1 6L16 8h-4.5z" />
       </svg>
     );
   }
   if (tab === 'sleep') {
     return (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-        <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z" fill={color} />
+      <svg {...props}>
+        <path d="M13.5 3.5A7 7 0 1 0 13.5 16.5 5.6 5.6 0 0 1 13.5 3.5Z" />
       </svg>
     );
   }
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-      <path d="M4 17l5-6 4 4 7-9" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    <svg {...props}>
+      <path d="M10 16.5 3.5 10A4 4 0 0 1 10 5.2 4 4 0 0 1 16.5 10Z" />
     </svg>
   );
 }
@@ -33,21 +59,26 @@ function Icon({ tab, color }) {
 export default function TabBar({ active, onChange }) {
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 flex bg-surface border-t border-black/40"
-      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      className="fixed bottom-0 left-0 right-0 flex"
+      style={{
+        height: 56,
+        paddingBottom: 'env(safe-area-inset-bottom)',
+        background: COLORS.bg,
+        borderTop: `1px solid ${COLORS.hairline}`,
+      }}
     >
-      {TABS.map((tab) => {
-        const isActive = active === tab.key;
-        const color = isActive ? COLORS.text : COLORS.muted;
+      {TABS.map((t) => {
+        const isActive = active === t.key;
+        const color = isActive ? COLORS.text : COLORS.dim;
         return (
           <button
-            key={tab.key}
+            key={t.key}
             type="button"
-            onClick={() => onChange?.(tab.key)}
-            className="flex-1 flex flex-col items-center gap-1 py-2"
+            onClick={() => onChange?.(t.key)}
+            className="flex-1 flex flex-col items-center justify-center gap-1"
           >
-            <Icon tab={tab.key} color={color} />
-            <span className={`text-label uppercase ${isActive ? 'text-text' : 'text-muted'}`}>{tab.label}</span>
+            <Icon tab={t.key} color={color} />
+            <span className="lbl" style={{ color, fontSize: 10 }}>{t.label}</span>
           </button>
         );
       })}

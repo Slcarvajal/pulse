@@ -78,7 +78,23 @@ export const DATA_TYPES = {
   sleep: 'sleep',
   heartRate: 'heart-rate',
   zones: 'time-in-heart-rate-zone',
-  exercise: 'exercise'
+  exercise: 'exercise',
+  // v2 (HEALTH_API.md §4) — all probed live, status 200.
+  respiratoryRate: 'daily-respiratory-rate',
+  skinTemp: 'daily-sleep-temperature-derivations',
+  vo2max: 'daily-vo2-max',
+  hrZones: 'daily-heart-rate-zones',
+  hrvSamples: 'heart-rate-variability',
+  spo2Samples: 'oxygen-saturation',
+  respiratoryRateSleep: 'respiratory-rate-sleep-summary',
+  activeZoneMinutes: 'active-zone-minutes',
+  activeEnergy: 'active-energy-burned',
+  totalCalories: 'total-calories',
+  distance: 'distance',
+  floors: 'floors',
+  sedentary: 'sedentary-period',
+  activeMinutes: 'active-minutes',
+  caloriesInZone: 'calories-in-heart-rate-zone'
 };
 
 /** Thrown when there is no usable token; callers should answer 401 {auth:'/api/auth'}. */
@@ -220,13 +236,20 @@ function filterField(dataType) {
  * @param {string} endExclusive YYYY-MM-DD exclusive
  * @returns {string}
  */
+const SAMPLE_TYPES = new Set([
+  'heart-rate',
+  'heart-rate-variability',
+  'oxygen-saturation',
+  'respiratory-rate-sleep-summary'
+]);
+
 function rangeFilter(dataType, startDate, endExclusive) {
   const f = filterField(dataType);
   let path;
   let suffix = '';
   if (dataType.startsWith('daily-')) path = `${f}.date`;
   else if (dataType === 'sleep') path = `${f}.interval.civil_end_time`;
-  else if (dataType === 'heart-rate' || dataType === 'heart-rate-variability' || dataType === 'oxygen-saturation') {
+  else if (SAMPLE_TYPES.has(dataType)) {
     path = `${f}.sample_time.civil_time`;
     suffix = 'T00:00:00';
   } else path = `${f}.interval.civil_start_time`;
@@ -340,4 +363,65 @@ export async function dailyRollUp(dataType, startDate, endDate) {
     chunkStart = chunkEnd;
   }
   return points;
+}
+
+/**
+ * POST :rollUp — INTRADAY buckets (HEALTH_API.md §5). Physical RFC3339 times, closed-open.
+ * Buckets with no samples are omitted by the API. Max 14 days for 'heart-rate'.
+ * @param {string} dataType kebab-case id, e.g. 'heart-rate'
+ * @param {string} startIso RFC3339 physical time, inclusive
+ * @param {string} endIso RFC3339 physical time, exclusive
+ * @param {string} [windowSize] bucket size, e.g. '300s'
+ * @returns {Promise<any[]>} rollupDataPoints
+ * @throws {AuthRequiredError}
+ */
+export async function rollUp(dataType, startIso, endIso, windowSize = '300s') {
+  const accessToken = await getAccessToken();
+  /** @type {any[]} */
+  const points = [];
+  let pageToken;
+  do {
+    /** @type {Record<string, any>} */
+    const body = { range: { startTime: startIso, endTime: endIso }, windowSize, pageSize: 500 };
+    if (pageToken) body.pageToken = pageToken;
+    const json = await apiFetch(
+      `${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:rollUp`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      },
+      dataType
+    );
+    if (Array.isArray(json.rollupDataPoints)) points.push(...json.rollupDataPoints);
+    pageToken = json.nextPageToken;
+  } while (pageToken);
+  return points;
+}
+
+/**
+ * LIST raw samples in a PHYSICAL-time window — used for "latest reading" only
+ * (never for a whole day; see HEALTH_API.md §4 heart-rate note).
+ * @param {string} dataType e.g. 'heart-rate'
+ * @param {string} startIso RFC3339, inclusive
+ * @param {string} endIso RFC3339, exclusive
+ * @param {number} [pageSize]
+ * @returns {Promise<any[]>} dataPoints, newest first
+ * @throws {AuthRequiredError}
+ */
+export async function listSamplesPhysical(dataType, startIso, endIso, pageSize = 200) {
+  const accessToken = await getAccessToken();
+  const f = dataType.replace(/-/g, '_');
+  const filter = `${f}.sample_time.physical_time >= "${startIso}" AND ${f}.sample_time.physical_time < "${endIso}"`;
+  const q = new URLSearchParams({ pageSize: String(pageSize), filter });
+  const json = await apiFetch(
+    `${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints?${q}`,
+    { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } },
+    dataType
+  );
+  return Array.isArray(json.dataPoints) ? json.dataPoints : [];
 }

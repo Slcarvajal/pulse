@@ -2,6 +2,7 @@
   "name": "Pulse",
   "short_name": "Pulse",
   "display": "standalone",
+  "orientation": "portrait",
   "start_url": "/",
   "background_color": "#000000",
   "theme_color": "#000000",

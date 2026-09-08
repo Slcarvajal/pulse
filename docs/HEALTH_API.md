@@ -30,3 +30,31 @@ Response: `{ rollupDataPoints: [ { civilStartTime:{date:{year,month,day}}, civil
 
 Sleep: pick the session with `metadata.mainSleep` (or longest) whose civil end date = the day. In-bed = interval end − start. Asleep = `summary.minutesAsleep`. Stage minutes from `summary.stagesSummary` (fallback: sum `stages[]` durations by type).
 Dates: `date` objects are the user's civil day. User is UTC-5; set `TZ` in `.env` so server-side "today" matches.
+
+## 4. v2 data types (all probed live 2026-09-08, status 200)
+LIST (`{key}.date` filter, one point/day; strip `dataSource`):
+| dataType | value key | fields |
+|---|---|---|
+| `daily-respiratory-rate` | `dailyRespiratoryRate` | `breathsPerMinute:16.8` |
+| `daily-sleep-temperature-derivations` | `dailySleepTemperatureDerivations` | `nightlyTemperatureCelsius:34.49`, `baselineTemperatureCelsius:34.00`, `relativeNightlyStddev30dCelsius:0.32` (skin temp; use nightly − baseline as deviation) |
+| `daily-vo2-max` | `dailyVo2Max` | `vo2Max:32.9`, `cardioFitnessLevel:"POOR"|...`, `estimated:true` |
+| `daily-heart-rate-zones` | `dailyHeartRateZones` | `heartRateZones:[{heartRateZoneType:LIGHT|MODERATE|VIGOROUS|PEAK, minBeatsPerMinute:"30", maxBeatsPerMinute:"116"}]` (user's personal zone bounds) |
+LIST (sample types, `{key}.sample_time.civil_time` filter, `sampleTime:{physicalTime, civilTime:{date,time:{hours,minutes,seconds}}}`):
+| `heart-rate-variability` | `heartRateVariability` | `rootMeanSquareOfSuccessiveDifferencesMilliseconds:51.1` (5-min samples during sleep) |
+| `oxygen-saturation` | `oxygenSaturation` | `percentage:93.5` |
+| `respiratory-rate-sleep-summary` | `respiratoryRateSleepSummary` | `deepSleepStats/lightSleepStats/remSleepStats/fullSleepStats:{breathsPerMinute,standardDeviation}` |
+| `heart-rate` | `heartRate` | `beatsPerMinute:"81"` — ~5s cadence, >20k points/day, 21+ pages, 12s. DO NOT list a whole day; use `:rollUp` (see §5) for the 24h chart, and list only the last ~10 min (physical_time filter) for "latest reading". |
+LIST (`exercise.interval.civil_start_time` filter): value key `exercise` → `interval:{startTime,endTime}`, `exerciseType:"VOLLEYBALL"`, `displayName`, `activeDuration:"1812s"`, `metricsSummary:{caloriesKcal, distanceMillimeters, steps:"1301", averageHeartRateBeatsPerMinute:"134", activeZoneMinutes:"36", heartRateZoneDurations:{lightTime:"300s",moderateTime:"960s",vigorousTime:"600s",peakTime:"0s"}}`
+DAILY ROLL-UP (POST, §2 body):
+| `active-zone-minutes` | `activeZoneMinutes` | `sumInFatBurnHeartZone:"2"`, `sumInCardioHeartZone`, `sumInPeakHeartZone` |
+| `active-energy-burned` / `total-calories` | `activeEnergyBurned` / `totalCalories` | `kcalSum:166.2` |
+| `distance` | `distance` | `millimetersSum:"1048416"` |
+| `floors` | `floors` | `countSum:"6"` |
+| `sedentary-period` | `sedentaryPeriod` | `durationSum:"38940s"` |
+| `active-minutes` | `activeMinutes` | `activeMinutesRollupByActivityLevel:[{activityLevel:"LIGHT", activeMinutesSum:"100"}]` |
+| `calories-in-heart-rate-zone` | `caloriesInHeartRateZone` | `caloriesInHeartRateZones:[{heartRateZone, kcal}]` |
+NOT AVAILABLE (400): `resting-heart-rate-personal-range`, `heart-rate-variability-personal-range` — compute personal ranges ourselves from 30-day history.
+
+## 5. INTRADAY ROLL-UP  `POST .../dataPoints:rollUp`  (verified: heart-rate, 24h in 5-min buckets = 240 buckets, 0.8s)
+Body: `{ "range": { "startTime": "2026-09-07T05:00:00Z", "endTime": "2026-09-08T05:00:00Z" }, "windowSize": "300s", "pageSize": 500 }` (RFC3339 physical times, closed-open; max 14 days for heart-rate)
+Response: `{ rollupDataPoints: [ { startTime, endTime, heartRate:{beatsPerMinuteAvg, beatsPerMinuteMax, beatsPerMinuteMin} } ], nextPageToken? }` — buckets with no samples are omitted. Works for every roll-up data type in §4.
