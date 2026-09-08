@@ -85,7 +85,8 @@ export async function buildHealthPayload() {
 
   const workoutsByDate = {};
   for (const w of workoutsAll || []) {
-    const d = w && typeof w.start === 'string' ? w.start.slice(0, 10) : null;
+    const wStart = w && typeof w.start === 'string' ? new Date(w.start) : null;
+    const d = wStart && !Number.isNaN(wStart.getTime()) ? localDateStr(wStart, tz) : null;
     if (!d) continue;
     (workoutsByDate[d] = workoutsByDate[d] || []).push(w);
   }
@@ -128,8 +129,8 @@ export async function buildHealthPayload() {
 
     const nightWindow = rows
       .slice(Math.max(0, i - (NIGHTS - 1)), i + 1)
-      .map((r) => r.sleepSession)
-      .filter((n) => n && Number.isFinite(n.asleepMin));
+      .filter((r) => r.sleepSession && Number.isFinite(r.sleepSession.asleepMin))
+      .map((r) => ({ asleepMin: r.sleepSession.asleepMin, need: r.need }));
     const debtHours = scores.sleepDebt(nightWindow);
     const yesterdayStrain = i > 0 ? rows[i - 1].strain : 0;
     const needV2 = scores.sleepNeedV2({ yesterdayStrain, debtHours, napMinutes: 0 });
@@ -140,16 +141,18 @@ export async function buildHealthPayload() {
     row.need = needV2.need;
     row.needBreakdown = needV2.breakdown;
     row.sleepHours = asleepMin != null ? scores.round1(asleepMin / 60) : null;
-    row.sleepPerformance = Math.round(scores.sleepPerformance(asleepMin, needV2.need));
-    row.sleepScore = Math.round(
-      scores.sleepScore({
-        asleepMinutes: asleepMin || 0,
-        inBedMinutes: inBedMin || asleepMin || 0,
-        deepMinutes: deepMin,
-        remMinutes: remMin,
-        needHours: needV2.need
-      })
-    );
+    row.sleepPerformance = asleepMin != null ? Math.round(scores.sleepPerformance(asleepMin, needV2.need)) : null;
+    row.sleepScore = asleepMin != null
+      ? Math.round(
+        scores.sleepScore({
+          asleepMinutes: asleepMin,
+          inBedMinutes: inBedMin || asleepMin,
+          deepMinutes: deepMin,
+          remMinutes: remMin,
+          needHours: needV2.need
+        })
+      )
+      : null;
   }
 
   const today = rows[rows.length - 1];
@@ -251,11 +254,11 @@ export async function buildHealthPayload() {
       end: (todaySession && todaySession.end) ?? null,
       inBedMin: today.inBedMin,
       asleepMin: today.asleepMin,
-      stages: (todaySession && todaySession.stages) || { deep: 0, rem: 0, light: 0, awake: 0 },
+      stages: today.asleepMin != null ? ((todaySession && todaySession.stages) || null) : null,
       latencyMin: (todaySession && num(todaySession.latencyMin)) ?? null,
       awakeMin: (todaySession && num(todaySession.awakeMin)) ?? null,
       disturbances: (todaySession && num(todaySession.disturbances)) ?? null,
-      efficiency: scores.sleepEfficiency(today.asleepMin, today.inBedMin),
+      efficiency: today.asleepMin != null ? scores.sleepEfficiency(today.asleepMin, today.inBedMin) : null,
       consistency: Math.round(scores.sleepConsistency(nights)),
       performance: today.sleepPerformance,
       debtHours: today.debtHours,

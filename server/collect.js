@@ -24,16 +24,43 @@ function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
+/** tz-local 'YYYY-MM-DD' for a Date, honoring process.env.TZ (matches payload.js). */
+function localDateStr(d) {
+  const timeZone = process.env.TZ || 'America/New_York';
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+  const p = {};
+  for (const x of parts) p[x.type] = x.value;
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
 function addDays(dateStr, n) {
   const d = new Date(`${dateStr}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return isoDate(d);
 }
 
-/** 'YYYY-MM-DDTHH:MM:SS±HH:MM' -> minutes past local midnight */
-function localMinutesOfDay(iso) {
-  const m = typeof iso === 'string' && iso.match(/T(\d{2}):(\d{2})/);
-  return m ? Number(m[1]) * 60 + Number(m[2]) : 0;
+/** '-18000s' -> seconds (number), or undefined when unparsable */
+function utcOffsetSeconds(v) {
+  return num(String(v === undefined || v === null ? '' : v).replace(/s$/, ''));
+}
+
+/** signed offset seconds -> '+HH:MM'/'-HH:MM' */
+function formatOffset(offsetSec) {
+  const sign = offsetSec < 0 ? '-' : '+';
+  const abs = Math.abs(offsetSec);
+  const hh = String(Math.floor(abs / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((abs % 3600) / 60)).padStart(2, '0');
+  return `${sign}${hh}:${mm}`;
+}
+
+/** UTC RFC3339 time + offset seconds -> { minutesOfDay, iso } in that local offset. */
+function localTimeFromUtc(iso, offsetSec) {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return { minutesOfDay: 0, iso: null };
+  const off = Number.isFinite(offsetSec) ? offsetSec : 0;
+  const shifted = new Date(t.getTime() + off * 1000);
+  const minutesOfDay = shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+  return { minutesOfDay, iso: shifted.toISOString().slice(0, 19) + formatOffset(off) };
 }
 
 /** LIST daily-summary points -> { 'YYYY-MM-DD': fn(value) }, omitting undefined results. */
@@ -177,6 +204,10 @@ export async function collectSleep(startDate, endDate) {
   for (const [date, entry] of best) {
     const s = entry.s;
     const interval = s.interval;
+    const startOffsetSec = utcOffsetSeconds(interval.startUtcOffset) ?? 0;
+    const endOffsetSec = utcOffsetSeconds(interval.endUtcOffset) ?? startOffsetSec;
+    const startLocal = localTimeFromUtc(interval.startTime, startOffsetSec);
+    const endLocal = localTimeFromUtc(interval.endTime, endOffsetSec);
     const summary = s.summary || {};
     const rawStages = Array.isArray(s.stages) ? s.stages : [];
     const stages = { deep: 0, rem: 0, light: 0, awake: 0 };
@@ -213,8 +244,8 @@ export async function collectSleep(startDate, endDate) {
     });
 
     out[date] = {
-      start: interval.startTime,
-      end: interval.endTime,
+      start: startLocal.iso || interval.startTime,
+      end: endLocal.iso || interval.endTime,
       inBedMin: Math.round(inBedMin),
       asleepMin: Math.round(asleepMin),
       stages: { deep: Math.round(stages.deep), rem: Math.round(stages.rem), light: Math.round(stages.light), awake: Math.round(stages.awake) },
@@ -222,8 +253,8 @@ export async function collectSleep(startDate, endDate) {
       awakeMin: Math.round(stages.awake),
       disturbances,
       hypnogram,
-      bedtimeMin: localMinutesOfDay(interval.startTime),
-      wakeMin: localMinutesOfDay(interval.endTime),
+      bedtimeMin: startLocal.minutesOfDay,
+      wakeMin: endLocal.minutesOfDay,
       nap: !!(s.metadata && s.metadata.nap)
     };
   }
@@ -260,7 +291,7 @@ export async function collectWorkouts(startDate, endDate) {
 
 /** Latest daily-heart-rate-zones point (last 30 days) -> [{type,min,max}]. */
 export async function collectHrZones() {
-  const today = isoDate(new Date());
+  const today = localDateStr(new Date());
   const start = addDays(today, -30);
   const points = await google.listRange(google.DATA_TYPES.hrZones, start, today);
   const latest = points[0];

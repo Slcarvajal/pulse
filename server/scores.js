@@ -107,7 +107,7 @@ export function zscore(value, baseline) {
  * @returns {number} signed difference vs 30-day mean
  */
 export function delta(value, baseline) {
-  if (!baseline || !Number.isFinite(value) || baseline.n === 0) return 0;
+  if (!baseline || !Number.isFinite(value) || baseline.n === 0 || !Number.isFinite(baseline.mean)) return null;
   return value - baseline.mean;
 }
 

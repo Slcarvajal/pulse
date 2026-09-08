@@ -32,6 +32,10 @@ async function handleCached(req, res, { name, ttlMs, build }) {
   const forceRefresh = req.query.refresh === '1';
   const cached = cache.read(name);
   if (!forceRefresh && cache.isFresh(cached, ttlMs)) {
+    if (!google.readToken()) {
+      res.status(401).json({ auth: '/api/auth' });
+      return;
+    }
     res.json(cached);
     return;
   }
@@ -60,6 +64,10 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/live', (req, res) => {
   handleCached(req, res, { name: 'live', ttlMs: LIVE_TTL_MS, build: buildLivePayload });
+});
+
+app.get('/api/*', (req, res) => {
+  res.status(404).json({ message: 'Not found' });
 });
 
 app.get('*', (req, res) => {

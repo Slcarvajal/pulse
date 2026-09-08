@@ -116,8 +116,14 @@ export default function App() {
   }, [ready]);
 
   const needsAuth = Boolean(data?.needsAuth) || error?.status === 401;
-  const merged = data && live && (live.hrDay || live.latestHr)
-    ? { ...data, latestHr: live.latestHr ?? data.latestHr, hrDay: live.hrDay ?? data.hrDay }
+  const liveHrDayValid = Array.isArray(live?.hrDay) && live.hrDay.length > 0;
+  const liveLatestHrValid = Boolean(live?.latestHr) && typeof live.latestHr === 'object' && live.latestHr.bpm != null;
+  const merged = data && live && (liveHrDayValid || liveLatestHrValid)
+    ? {
+        ...data,
+        latestHr: liveLatestHrValid ? live.latestHr : data.latestHr,
+        hrDay: liveHrDayValid ? live.hrDay : data.hrDay,
+      }
     : data;
   const showSkeleton = loading && !data;
   const showConnect = !showSkeleton && needsAuth;

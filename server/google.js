@@ -155,16 +155,24 @@ export function authUrl(state) {
 
 /**
  * @param {Record<string,string>} body
+ * @param {{isRefresh?: boolean}} [opts]
  * @returns {Promise<any>}
+ * @throws {AuthRequiredError} when a refresh is rejected (revoked/expired grant)
  */
-async function postToken(body) {
+async function postToken(body, opts = {}) {
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body)
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`token endpoint ${res.status}: ${json.error_description || json.error || 'unknown'}`);
+  if (!res.ok) {
+    if (opts.isRefresh && (json.error === 'invalid_grant' || res.status === 400 || res.status === 401)) {
+      try { fs.rmSync(TOKEN_PATH, { force: true }); } catch {}
+      throw new AuthRequiredError(`refresh rejected: ${res.status}`);
+    }
+    throw new Error(`token endpoint ${res.status}: ${json.error_description || json.error || 'unknown'}`);
+  }
   return json;
 }
 
@@ -199,7 +207,7 @@ export async function refreshAccessToken(refreshToken) {
     client_id: process.env.GOOGLE_CLIENT_ID || '',
     client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
     grant_type: 'refresh_token'
-  });
+  }, { isRefresh: true });
   return saveToken({
     refresh_token: t.refresh_token || refreshToken,
     access_token: t.access_token,
