@@ -55,6 +55,17 @@ check(
   5.286465072
 );
 
+// Case 4b — strain from Google zone minutes: LIGHT dropped (w0), MODERATE 60 (w2) = 120,
+// VIGOROUS 20 (w8) = 160, PEAK 5 (w12) = 60  ->  load 340
+check(
+  'strain(zoneMinutes 60/20/5)',
+  strain({ age: 30, zoneMinutes: { LIGHT: 1140, MODERATE: 60, VIGOROUS: 20, PEAK: 5 } }),
+  21 * (1 - Math.exp(-340 / 600))
+);
+
+// Case 4c — zone data with only LIGHT falls back to steps
+check('strain(LIGHT only, steps 12000)', strain({ age: 30, zoneMinutes: { LIGHT: 1140 }, steps: 12000 }), 21 * (1 - Math.exp(-1)));
+
 // Case 5 — strain fallback (no HR series): 21 * (1 - e^(-12000/12000)) = 21 * (1 - 1/e)
 check('strain(steps 12000, no HR)', strain({ steps: 12000, age: 30 }), 21 * (1 - Math.exp(-1)));
 

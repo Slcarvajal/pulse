@@ -37,6 +37,10 @@
 /** @type {readonly number[]} index = zone (0..5) */
 const ZONE_WEIGHTS = [0, 1, 2, 4, 8, 12];
 
+// Google Health zone name -> SPEC §6 zone weight. LIGHT is everything below fat-burn and
+// includes ~19h/day of resting time, so it is dropped (weight 0); the rest map onto z2/z4/z5.
+const GOOGLE_ZONE_WEIGHTS = { LIGHT: 0, MODERATE: 2, VIGOROUS: 8, PEAK: 12 };
+
 const RESTORATIVE_TARGET = 0.45;
 
 /**
@@ -182,11 +186,28 @@ export function zoneLoad(samples, age) {
 }
 
 /**
- * @param {{hrSamples?: HrSample[], steps?: number, age?: number}} input
+ * @param {Record<string, number>} zoneMinutes minutes per Google Health zone name
+ * @returns {number} weighted zone load
+ */
+export function zoneMinutesLoad(zoneMinutes) {
+  let load = 0;
+  for (const zone of Object.keys(zoneMinutes || {})) {
+    const w = GOOGLE_ZONE_WEIGHTS[zone.toUpperCase()];
+    const minutes = zoneMinutes[zone];
+    if (w === undefined || !Number.isFinite(minutes) || minutes <= 0) continue;
+    load += minutes * w;
+  }
+  return load;
+}
+
+/**
+ * @param {{zoneMinutes?: Record<string,number>, hrSamples?: HrSample[], steps?: number, age?: number}} input
  * @returns {number} 0-21
  */
 export function strain(input) {
   const age = Number.isFinite(input && input.age) ? input.age : 30;
+  const zLoad = zoneMinutesLoad(input && input.zoneMinutes);
+  if (zLoad > 0) return clamp(21 * (1 - Math.exp(-zLoad / 600)), 0, 21);
   const load = zoneLoad(input && input.hrSamples, age);
   if (input && input.hrSamples && input.hrSamples.length) return clamp(21 * (1 - Math.exp(-load / 600)), 0, 21);
   const steps = Number.isFinite(input && input.steps) ? input.steps : 0;

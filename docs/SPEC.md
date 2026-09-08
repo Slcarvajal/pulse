@@ -4,7 +4,7 @@
 Open an icon on my iPhone home screen → full-screen black dashboard showing Recovery, Strain, Sleep from my Fitbit Air, refreshed on open. Whoop aesthetic. One user (me).
 
 ## 2. Data flow
-Fitbit Air → Google Health app → Google cloud → `GET health.googleapis.com/v4/...` → `/api/health` (server) → JSON cache → React UI.
+Fitbit Air → Google Health app → Google cloud → `health.googleapis.com/v4/...` → `/api/health` (server) → JSON cache → React UI. The v4 API has **no `startTime`/`endTime` query params** (400): LIST takes an AIP-160 `filter` and daily totals come from `POST .../dataPoints:dailyRollUp` — verified contract in `docs/HEALTH_API.md`.
 
 Auth: Google OAuth 2.0, authorization-code flow, server-side. Consent screen in *Testing* mode, my account as test user. Refresh token persisted to `data/token.json`.
 

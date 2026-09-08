@@ -24,10 +24,7 @@ app.get('/api/auth/callback', async (req, res) => {
   }
 });
 
-// -- payload assembly helpers (dataPoint shape is not fully specified by the
-// Health API docs referenced in google.js, so these read defensively across
-// the common field names: value/fpVal/intVal for scalars, stage/value for
-// sleep-stage type, start/endTime for duration). --
+// -- payload assembly: Google Health API v4 payload shapes, per docs/HEALTH_API.md. --
 
 function isoDate(d) {
   return d.toISOString().slice(0, 10);
@@ -47,86 +44,121 @@ function addDays(dateStr, n) {
   return isoDate(d);
 }
 
-function pointDate(p) {
-  const t = p && (p.startTime || p.time || p.endTime);
-  return typeof t === 'string' ? t.slice(0, 10) : null;
+/** API numbers often arrive as strings; undefined when not a finite number. */
+function num(v) {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
 }
 
-function pointValue(p) {
-  if (!p) return null;
-  if (typeof p.value === 'number') return p.value;
-  if (typeof p.fpVal === 'number') return p.fpVal;
-  if (typeof p.intVal === 'number') return p.intVal;
-  if (Array.isArray(p.value) && p.value[0]) {
-    const v = p.value[0];
-    if (typeof v.fpVal === 'number') return v.fpVal;
-    if (typeof v.intVal === 'number') return v.intVal;
-  }
-  return null;
+/** {year,month,day} -> 'YYYY-MM-DD' */
+function civilKey(date) {
+  if (!date || !Number.isFinite(Number(date.year))) return null;
+  return `${date.year}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
 }
 
-function pointBpm(p) {
-  return typeof p.bpm === 'number' ? p.bpm : pointValue(p);
+/** '70200s' -> minutes */
+function durationMinutes(v) {
+  const n = num(String(v === undefined || v === null ? '' : v).replace(/s$/, ''));
+  return n === undefined ? 0 : n / 60;
 }
 
-function pointStage(p) {
-  const s = p && (p.stage || p.sleepStage || p.value);
-  return typeof s === 'string' ? s.toUpperCase() : null;
-}
-
-function pointMinutes(p) {
-  if (!p || !p.startTime || !p.endTime) return null;
-  const ms = new Date(p.endTime) - new Date(p.startTime);
-  return Number.isFinite(ms) && ms > 0 ? ms / 60000 : null;
-}
-
-function groupByDay(points) {
-  const map = new Map();
+/** Daily-summary list points -> { 'YYYY-MM-DD': number } */
+function dailyValues(points, valueKey, field) {
+  const out = {};
   for (const p of points || []) {
-    const d = pointDate(p);
-    if (!d) continue;
-    if (!map.has(d)) map.set(d, []);
-    map.get(d).push(p);
-  }
-  return map;
-}
-
-function dailyAvg(points) {
-  const out = {};
-  for (const [date, pts] of groupByDay(points)) {
-    const vals = pts.map(pointValue).filter(Number.isFinite);
-    if (vals.length) out[date] = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const v = p && p[valueKey];
+    const date = civilKey(v && v.date);
+    const n = num(v && v[field]);
+    if (date && n !== undefined) out[date] = n;
   }
   return out;
 }
 
-function dailySum(points) {
+/** rollUp points -> { 'YYYY-MM-DD': valueObject } keyed by civil start date */
+function rollUpByDay(points, valueKey) {
   const out = {};
-  for (const [date, pts] of groupByDay(points)) {
-    const vals = pts.map(pointValue).filter(Number.isFinite);
-    out[date] = vals.reduce((a, b) => a + b, 0);
+  for (const p of points || []) {
+    const date = civilKey(p && p.civilStartTime && p.civilStartTime.date);
+    const v = p && p[valueKey];
+    if (date && v) out[date] = v;
   }
   return out;
 }
 
-function dailySleep(points) {
+function stepsByDay(points) {
   const out = {};
-  for (const [date, pts] of groupByDay(points)) {
-    const stages = { DEEP: 0, REM: 0, LIGHT: 0, AWAKE: 0 };
-    for (const p of pts) {
-      const stage = pointStage(p);
-      const minutes = pointMinutes(p) || 0;
-      if (stage && Object.prototype.hasOwnProperty.call(stages, stage)) stages[stage] += minutes;
+  for (const [date, v] of Object.entries(rollUpByDay(points, 'steps'))) {
+    const n = num(v.countSum);
+    if (n !== undefined) out[date] = n;
+  }
+  return out;
+}
+
+function zoneMinutesByDay(points) {
+  const out = {};
+  for (const [date, v] of Object.entries(rollUpByDay(points, 'timeInHeartRateZone'))) {
+    const zones = {};
+    for (const z of v.timeInHeartRateZones || []) {
+      if (!z || !z.heartRateZone) continue;
+      zones[z.heartRateZone] = (zones[z.heartRateZone] || 0) + durationMinutes(z.duration);
     }
-    const asleepMinutes = stages.DEEP + stages.REM + stages.LIGHT;
-    out[date] = {
-      deep: stages.DEEP,
-      rem: stages.REM,
-      light: stages.LIGHT,
-      awake: stages.AWAKE,
-      asleepMinutes,
-      inBedMinutes: asleepMinutes + stages.AWAKE
-    };
+    if (Object.keys(zones).length) out[date] = zones;
+  }
+  return out;
+}
+
+// ASLEEP/RESTLESS appear in non-STAGES sessions; bucket them with light/awake.
+const STAGE_KEYS = { DEEP: 'deep', REM: 'rem', LIGHT: 'light', ASLEEP: 'light', AWAKE: 'awake', RESTLESS: 'awake' };
+
+/** Civil end date of a session: UTC end shifted by the session's UTC offset. */
+function sessionEndDate(interval) {
+  const end = new Date(interval && interval.endTime);
+  if (Number.isNaN(end.getTime())) return null;
+  const offsetSec = num(String(interval.startUtcOffset || '0').replace(/s$/, '')) || 0;
+  return isoDate(new Date(end.getTime() + offsetSec * 1000));
+}
+
+function intervalMinutes(interval) {
+  const ms = new Date(interval && interval.endTime) - new Date(interval && interval.startTime);
+  return Number.isFinite(ms) && ms > 0 ? ms / 60000 : 0;
+}
+
+/** Sleep sessions -> per civil end date: main (or longest) session's minutes. */
+function sleepByDay(points) {
+  const best = new Map();
+  for (const p of points || []) {
+    const s = p && p.sleep;
+    const interval = s && s.interval;
+    if (!interval) continue;
+    const date = sessionEndDate(interval);
+    if (!date) continue;
+    const inBed = intervalMinutes(interval);
+    const main = !!(s.metadata && s.metadata.mainSleep);
+    const prev = best.get(date);
+    if (!prev || (main && !prev.main) || (main === prev.main && inBed > prev.inBed)) best.set(date, { s, inBed, main });
+  }
+  const out = {};
+  for (const [date, entry] of best) {
+    const s = entry.s;
+    const summary = s.summary || {};
+    const stages = { deep: 0, rem: 0, light: 0, awake: 0 };
+    if (Array.isArray(summary.stagesSummary) && summary.stagesSummary.length) {
+      for (const st of summary.stagesSummary) {
+        const key = STAGE_KEYS[String(st && st.type).toUpperCase()];
+        if (key) stages[key] += num(st.minutes) || 0;
+      }
+    } else {
+      for (const st of s.stages || []) {
+        const key = STAGE_KEYS[String(st && st.type).toUpperCase()];
+        if (key) stages[key] += intervalMinutes(st);
+      }
+    }
+    if (stages.awake === 0) stages.awake = num(summary.minutesAwake) || 0;
+    const summaryAsleep = num(summary.minutesAsleep);
+    const asleepMinutes = summaryAsleep === undefined ? stages.deep + stages.rem + stages.light : summaryAsleep;
+    const inBedMinutes = entry.inBed > 0 ? entry.inBed : asleepMinutes + stages.awake;
+    out[date] = { ...stages, asleepMinutes, inBedMinutes };
   }
   return out;
 }
@@ -143,33 +175,31 @@ async function buildHealthPayload() {
   const today = localIsoDate(new Date());
   const startDate = addDays(today, -30);
 
-  const [hrvPts, rhrPts, spo2Pts, stepsPts, sleepPts, hrPts] = await Promise.all([
-    google.fetchRange(google.DATA_TYPES.hrv, startDate, today),
-    google.fetchRange(google.DATA_TYPES.rhr, startDate, today),
-    google.fetchRange(google.DATA_TYPES.spo2, startDate, today),
-    google.fetchRange(google.DATA_TYPES.steps, startDate, today),
-    google.fetchRange(google.DATA_TYPES.sleep, startDate, today),
-    google.fetchRange(google.DATA_TYPES.heartRate, today, today)
+  const [rhrPts, hrvPts, spo2Pts, sleepPts, stepsRollUp, zoneRollUp] = await Promise.all([
+    google.listRange(google.DATA_TYPES.rhr, startDate, today),
+    google.listRange(google.DATA_TYPES.hrv, startDate, today),
+    google.listRange(google.DATA_TYPES.spo2, startDate, today),
+    google.listRange(google.DATA_TYPES.sleep, startDate, today),
+    google.dailyRollUp(google.DATA_TYPES.steps, startDate, today),
+    google.dailyRollUp(google.DATA_TYPES.zones, startDate, today)
   ]);
 
-  const hrvByDay = dailyAvg(hrvPts);
-  const rhrByDay = dailyAvg(rhrPts);
-  const spo2ByDay = dailyAvg(spo2Pts);
-  const stepsByDay = dailySum(stepsPts);
-  const sleepByDay = dailySleep(sleepPts);
-  const todayHrSamples = (hrPts || [])
-    .map((p) => ({ bpm: pointBpm(p), minutes: pointMinutes(p) || 1 }))
-    .filter((s) => Number.isFinite(s.bpm));
+  const rhrByDay = dailyValues(rhrPts, 'dailyRestingHeartRate', 'beatsPerMinute');
+  const hrvByDay = dailyValues(hrvPts, 'dailyHeartRateVariability', 'averageHeartRateVariabilityMilliseconds');
+  const spo2ByDay = dailyValues(spo2Pts, 'dailyOxygenSaturation', 'averagePercentage');
+  const sleepDay = sleepByDay(sleepPts);
+  const stepsDay = stepsByDay(stepsRollUp);
+  const zonesDay = zoneMinutesByDay(zoneRollUp);
 
   const dates = Array.from({ length: 31 }, (_, i) => addDays(startDate, i));
   const raw = dates.map((date) => {
-    const sleep = sleepByDay[date] || EMPTY_SLEEP;
+    const sleep = sleepDay[date] || EMPTY_SLEEP;
     return {
       date,
       hrv: hrvByDay[date],
       rhr: rhrByDay[date],
       spo2: spo2ByDay[date],
-      steps: stepsByDay[date] || 0,
+      steps: stepsDay[date] || 0,
       sleepHours: sleep.asleepMinutes / 60,
       sleep
     };
@@ -181,10 +211,9 @@ async function buildHealthPayload() {
   let prevComputed = null;
   const computed = [];
   for (const d of raw) {
-    const isToday = d.date === today;
     const need = scores.sleepNeed(prevComputed);
     const rec = scores.recovery({ hrv: d.hrv, rhr: d.rhr, sleepHours: d.sleepHours, sleepNeed: need }, base);
-    const str = scores.strain({ hrSamples: isToday ? todayHrSamples : undefined, steps: d.steps, age });
+    const str = scores.strain({ zoneMinutes: zonesDay[d.date], steps: d.steps, age });
     const sScore = scores.sleepScore({
       asleepMinutes: d.sleep.asleepMinutes,
       inBedMinutes: d.sleep.inBedMinutes,

@@ -1,39 +1,60 @@
 // Google OAuth 2.0 + Google Health API v4 access. Token persisted to data/token.json.
 /*
  ============================================================================
- GOOGLE HEALTH API v4 — LOOKED UP ONCE, DO NOT RE-RESEARCH
+ GOOGLE HEALTH API v4 — VERIFIED LIVE CONTRACT (docs/HEALTH_API.md). DO NOT RE-RESEARCH.
  ----------------------------------------------------------------------------
- REST base      : https://health.googleapis.com/v4
- Data points    : GET /v4/users/me/dataTypes/{dataType}/dataPoints
-                    ?startTime=<RFC3339>&endTime=<RFC3339>&pageSize=&pageToken=
-                  ({dataType} is the kebab-case DataPoint union field name.)
- OAuth endpoints: auth   https://accounts.google.com/o/oauth2/v2/auth
-                  token  https://oauth2.googleapis.com/token
- Auth header    : Authorization: Bearer <access_token>
- Paging         : response { dataPoints: [...], nextPageToken?: "..." }
+ Base : https://health.googleapis.com/v4/users/me/dataTypes/{dataType}
+ Auth : Authorization: Bearer <access_token>
+ OAuth: auth  https://accounts.google.com/o/oauth2/v2/auth
+        token https://oauth2.googleapis.com/token   (access_type=offline, prompt=consent)
+ Scopes (all valid, Restricted, consent screen in Testing):
+   .../auth/googlehealth.activity_and_fitness.readonly
+   .../auth/googlehealth.health_metrics_and_measurements.readonly
+   .../auth/googlehealth.sleep.readonly
 
- OAUTH READ SCOPES WE REQUEST (all Restricted; consent screen stays in Testing):
-   https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly
-     -> steps, exercise/activity, heart rate, resting heart rate, HRV
-   https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly
-     -> oxygen saturation and other vitals
-   https://www.googleapis.com/auth/googlehealth.sleep.readonly
-     -> sleep sessions and sleep stages
- Auth request also uses access_type=offline & prompt=consent to get a refresh token.
+ 1. LIST  GET .../dataPoints?pageSize=N&filter=<AIP-160>&pageToken=
+    startTime/endTime query params DO NOT EXIST (400). Time range goes in `filter`.
+    Response: { dataPoints: DataPoint[], nextPageToken?: string }, newest first. pageSize max 10000.
+    Filter patterns (field name = dataType with `-` -> `_`):
+      daily summaries : daily_resting_heart_rate.date >= "2026-09-01" AND daily_resting_heart_rate.date < "2026-09-09"
+      interval (steps): steps.interval.civil_start_time >= "2026-09-07" AND steps.interval.civil_start_time < "2026-09-08"
+      samples (hr)    : heart_rate.sample_time.civil_time >= "2026-09-07T10:00:00" AND heart_rate.sample_time.civil_time < "2026-09-07T10:05:00"
+      sleep (by END)  : sleep.interval.civil_end_time >= "2026-09-06" AND sleep.interval.civil_end_time < "2026-09-09"
+
+ 2. DAILY ROLL-UP  POST .../dataPoints:dailyRollUp  (steps + HR zones; avoids paging per-minute points)
+    Body: { "range": { "start": { "date": {year,month,day} }, "end": { "date": {...} } }, "windowSizeDays": 1 }
+    (closed-open; max 90 days, but 14 days for `heart-rate`)
+    Response: { rollupDataPoints: [ { civilStartTime:{date:{...}}, civilEndTime, <valueKey>: {...} } ] }
+
+ 3. Data types -> payload shapes (a DataPoint has `dataSource` + ONE value key;
+    numbers often arrive as strings — Number() them):
+      daily-resting-heart-rate     dailyRestingHeartRate     date, beatsPerMinute:"68"
+      daily-heart-rate-variability dailyHeartRateVariability date, averageHeartRateVariabilityMilliseconds (= our HRV),
+                                                             deepSleepRootMeanSquareOfSuccessiveDifferencesMilliseconds
+      daily-oxygen-saturation      dailyOxygenSaturation     date, averagePercentage, lower/upperBoundPercentage
+      steps (rollUp)               steps                     countSum:"1436" per day
+      time-in-heart-rate-zone (rollUp) timeInHeartRateZone   timeInHeartRateZones:[{heartRateZone:"LIGHT"|"MODERATE"|
+                                                             "VIGOROUS"|"PEAK", duration:"70200s"}]
+                                                             LIGHT ~ below fat-burn (includes rest, ~19h/day)
+      heart-rate (rollUp)          heartRate                 beatsPerMinuteAvg/Max/Min
+      sleep (list)                 sleep                     interval:{startTime,endTime RFC3339,startUtcOffset:"-18000s"},
+                                                             type:"STAGES", stages:[{startTime,endTime,type}],
+                                                             summary:{minutesAsleep,minutesAwake,minutesInSleepPeriod,
+                                                             minutesToFallAsleep,stagesSummary:[{type,minutes,count}]},
+                                                             metadata:{mainSleep,nap}
+    Sleep: pick the session with metadata.mainSleep (or longest) whose civil end date = the day.
+    In-bed = interval end - start. Asleep = summary.minutesAsleep. Stage minutes from summary.stagesSummary
+    (fallback: sum stages[] durations by type).
+    Dates: `date` objects are the user's civil day. User is UTC-5; set TZ in .env so server "today" matches.
 
  OUR FIELD -> API dataType MAPPING (SPEC §5 payload fields):
-   today.hrv         -> "daily-heart-rate-variability"  (RMSSD ms, one point/day)
-   today.rhr         -> "daily-resting-heart-rate"      (bpm, one point/day)
-   today.spo2        -> "daily-oxygen-saturation"       (percent, one point/day)
-   today.steps       -> "steps"                         (sum count over range)
-   today.sleepHours  -> "sleep"                         (session + stages)
-   sleepStages.*     -> "sleep"                         (stage types AWAKE|DEEP|REM|LIGHT)
-   strain HR series  -> "heart-rate"                    (intraday bpm samples)
-   strain fallback   -> "steps"
-   exercise sessions -> "exercise"                      (optional, not used by v1 scores)
- Intraday variants also exist: "heart-rate-variability", "oxygen-saturation".
+   today.hrv        -> daily-heart-rate-variability     today.rhr   -> daily-resting-heart-rate
+   today.spo2       -> daily-oxygen-saturation          today.steps -> steps (rollUp)
+   today.sleepHours -> sleep (list)                     sleepStages -> sleep (list)
+   strain           -> time-in-heart-rate-zone (rollUp), steps fallback
  ============================================================================
 */
+
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -56,6 +77,7 @@ export const DATA_TYPES = {
   steps: 'steps',
   sleep: 'sleep',
   heartRate: 'heart-rate',
+  zones: 'time-in-heart-rate-zone',
   exercise: 'exercise'
 };
 
@@ -182,46 +204,140 @@ export async function getAccessToken() {
   return fresh.access_token;
 }
 
+
 /**
- * @param {string} date YYYY-MM-DD or ISO
- * @param {boolean} endOfDay
- * @returns {string} RFC3339 UTC
+ * @param {string} dataType kebab-case id
+ * @returns {string} AIP-160 field name (dataType with `-` -> `_`)
  */
-function rfc3339(date, endOfDay) {
-  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return `${date}T${endOfDay ? '23:59:59' : '00:00:00'}Z`;
-  }
-  return new Date(date).toISOString();
+function filterField(dataType) {
+  return String(dataType).replace(/-/g, '_');
 }
 
 /**
- * Fetch every data point of one type in a date range (follows nextPageToken).
+ * Time-range filter for one data type family (see header block).
+ * @param {string} dataType
+ * @param {string} startDate YYYY-MM-DD inclusive
+ * @param {string} endExclusive YYYY-MM-DD exclusive
+ * @returns {string}
+ */
+function rangeFilter(dataType, startDate, endExclusive) {
+  const f = filterField(dataType);
+  let path;
+  let suffix = '';
+  if (dataType.startsWith('daily-')) path = `${f}.date`;
+  else if (dataType === 'sleep') path = `${f}.interval.civil_end_time`;
+  else if (dataType === 'heart-rate' || dataType === 'heart-rate-variability' || dataType === 'oxygen-saturation') {
+    path = `${f}.sample_time.civil_time`;
+    suffix = 'T00:00:00';
+  } else path = `${f}.interval.civil_start_time`;
+  return `${path} >= "${startDate}${suffix}" AND ${path} < "${endExclusive}${suffix}"`;
+}
+
+/**
+ * @param {string} dateStr YYYY-MM-DD
+ * @param {number} n
+ * @returns {string} YYYY-MM-DD
+ */
+function shiftDate(dateStr, n) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * @param {string} dateStr YYYY-MM-DD
+ * @returns {{year:number,month:number,day:number}}
+ */
+function civilDate(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return { year, month, day };
+}
+
+/**
+ * @param {string} url
+ * @param {RequestInit} init
+ * @param {string} dataType for error messages
+ * @returns {Promise<any>}
+ * @throws {AuthRequiredError}
+ */
+async function apiFetch(url, init, dataType) {
+  const res = await fetch(url, init);
+  if (res.status === 401 || res.status === 403) throw new AuthRequiredError(`health api ${res.status}`);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`health api ${res.status} for ${dataType}: ${detail.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+/**
+ * LIST every data point of one type in a civil-date range (follows nextPageToken).
  * @param {string} dataType kebab-case id, e.g. 'sleep' — see DATA_TYPES
  * @param {string} startDate YYYY-MM-DD (inclusive)
  * @param {string} endDate YYYY-MM-DD (inclusive)
  * @returns {Promise<any[]>} dataPoints
  * @throws {AuthRequiredError}
  */
-export async function fetchRange(dataType, startDate, endDate) {
+export async function listRange(dataType, startDate, endDate) {
   const accessToken = await getAccessToken();
+  const filter = rangeFilter(dataType, startDate, shiftDate(endDate, 1));
   /** @type {any[]} */
   const points = [];
   let pageToken;
   do {
-    const q = new URLSearchParams({
-      startTime: rfc3339(startDate, false),
-      endTime: rfc3339(endDate, true),
-      pageSize: '1000'
-    });
+    const q = new URLSearchParams({ pageSize: '1000', filter });
     if (pageToken) q.set('pageToken', pageToken);
-    const res = await fetch(`${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints?${q}`, {
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
-    });
-    if (res.status === 401 || res.status === 403) throw new AuthRequiredError(`health api ${res.status}`);
-    if (!res.ok) throw new Error(`health api ${res.status} for ${dataType}`);
-    const json = await res.json();
+    const json = await apiFetch(
+      `${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints?${q}`,
+      { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } },
+      dataType
+    );
     if (Array.isArray(json.dataPoints)) points.push(...json.dataPoints);
     pageToken = json.nextPageToken;
   } while (pageToken);
+  return points;
+}
+
+/** Back-compat alias — LIST is the default read path. */
+export const fetchRange = listRange;
+
+/**
+ * POST :dailyRollUp for one type over a civil-date range, chunked to the API limit
+ * (14 days for 'heart-rate', 90 otherwise). Range sent closed-open.
+ * @param {string} dataType kebab-case id, e.g. 'steps'
+ * @param {string} startDate YYYY-MM-DD (inclusive)
+ * @param {string} endDate YYYY-MM-DD (inclusive)
+ * @returns {Promise<any[]>} rollupDataPoints
+ * @throws {AuthRequiredError}
+ */
+export async function dailyRollUp(dataType, startDate, endDate) {
+  const accessToken = await getAccessToken();
+  const maxDays = dataType === 'heart-rate' ? 14 : 90;
+  const endExclusive = shiftDate(endDate, 1);
+  /** @type {any[]} */
+  const points = [];
+  let chunkStart = startDate;
+  while (chunkStart < endExclusive) {
+    const next = shiftDate(chunkStart, maxDays);
+    const chunkEnd = next < endExclusive ? next : endExclusive;
+    const json = await apiFetch(
+      `${API_BASE}/users/me/dataTypes/${encodeURIComponent(dataType)}/dataPoints:dailyRollUp`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          range: { start: { date: civilDate(chunkStart) }, end: { date: civilDate(chunkEnd) } },
+          windowSizeDays: 1
+        })
+      },
+      dataType
+    );
+    if (Array.isArray(json.rollupDataPoints)) points.push(...json.rollupDataPoints);
+    chunkStart = chunkEnd;
+  }
   return points;
 }
